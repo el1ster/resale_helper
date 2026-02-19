@@ -13,6 +13,21 @@ def get_categories_kb() -> InlineKeyboardMarkup:
     builder.adjust(1) # По одній кнопці в ряд
     return builder.as_markup()
 
+def get_currency_kb() -> InlineKeyboardMarkup:
+    """Генерує клавіатуру для вибору валюти."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🇺🇦 UAH (Гривня)", callback_data="curr_UAH")
+    builder.button(text="🇺🇸 USD (Долар)", callback_data="curr_USD")
+    builder.button(text="🇪🇺 EUR (Євро)", callback_data="curr_EUR")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def get_receipt_actions_kb(val_id: int) -> InlineKeyboardMarkup:
+    """Генерує клавіатуру дій після розрахунку."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📸 Отримати фото-сертифікат", callback_data=f"receipt_img_{val_id}")
+    return builder.as_markup()
+
 def get_age_presets_kb() -> InlineKeyboardMarkup:
     """Генерує клавіатуру з пресетами для віку."""
     builder = InlineKeyboardBuilder()

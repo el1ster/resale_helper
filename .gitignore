@@ -1,0 +1,26 @@
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database
+*.db
+*.sqlite3
+resale_helper.db
+
+# IDEs
+.idea/
+.vscode/
+
+# Ignore local gemini config but keep standard instructions
+.gemini/
+!GEMINI.md

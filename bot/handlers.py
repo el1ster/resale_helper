@@ -1,5 +1,6 @@
 import re
 import json
+import logging
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart, Command
@@ -13,11 +14,13 @@ from bot import receipt
 import crud
 from engine import ValuationEngine
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    logger.info(f"User {message.from_user.id} started the bot.")
     await message.answer(
         "👋 Вітаю у <b>EVS Bot</b> — Універсальній системі оцінки активів!\n\n"
         "Я допоможу вам розрахувати справедливу ринкову вартість будь-якого товару (від смартфона до дивана).\n\n"
@@ -28,6 +31,7 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(Command("evaluate"))
 async def cmd_evaluate(message: Message, state: FSMContext):
     await state.clear()
+    logger.info(f"User {message.from_user.id} started an evaluation.")
     await message.answer(
         "📦 <b>Крок 1/9: Виберіть категорію товару</b>\n"
         "Що саме ми будемо оцінювати?",
@@ -44,6 +48,8 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     if not category:
         await callback.answer("Категорію не знайдено!", show_alert=True)
         return
+
+    logger.info(f"User {callback.from_user.id} chose category: {category['name_ua']} (id: {cat_id})")
 
     # Зберігаємо вибрані дані у пам'ять FSM
     await state.update_data(
@@ -64,6 +70,7 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(ValuationFSM.choosing_currency, F.data.startswith("curr_"))
 async def process_currency(callback: CallbackQuery, state: FSMContext):
     curr_code = callback.data.split("_")[1]
+    logger.info(f"User {callback.from_user.id} chose currency: {curr_code}")
     await state.update_data(currency=curr_code)
     
     await callback.message.edit_text(
@@ -91,6 +98,7 @@ async def process_base_price(message: Message, state: FSMContext):
         await message.answer("⚠️ Вартість повинна бути більшою за нуль.")
         return
 
+    logger.info(f"User {message.from_user.id} entered base price: {base_price}")
     await state.update_data(base_price=base_price)
     data = await state.get_data()
     
@@ -116,7 +124,7 @@ async def process_age_callback(callback: CallbackQuery, state: FSMContext):
         return
 
     age_months = int(action)
-    await _proceed_to_phys_state(callback.message, state, age_months)
+    await _proceed_to_phys_state(callback.message, state, age_months, callback.from_user.id)
 
 @router.message(ValuationFSM.entering_age)
 async def process_age_text(message: Message, state: FSMContext):
@@ -140,9 +148,10 @@ async def process_age_text(message: Message, state: FSMContext):
 
     age_months = int(num * 12) if is_years else int(num)
     
-    await _proceed_to_phys_state(message, state, age_months)
+    await _proceed_to_phys_state(message, state, age_months, message.from_user.id)
 
-async def _proceed_to_phys_state(message: Message, state: FSMContext, age_months: int):
+async def _proceed_to_phys_state(message: Message, state: FSMContext, age_months: int, user_id: int):
+    logger.info(f"User {user_id} entered age: {age_months} months")
     await state.update_data(age_months=age_months)
     
     text = (
@@ -166,6 +175,8 @@ async def process_factor(callback: CallbackQuery, state: FSMContext, factor_type
     if not coeff:
         await callback.answer("Помилка: Коефіцієнт не знайдено!", show_alert=True)
         return
+
+    logger.info(f"User {callback.from_user.id} chose {factor_type}: {coeff['name_ua']} (x{coeff['multiplier']})")
 
     await state.update_data({
         f"{factor_type}_code": code,
@@ -202,6 +213,8 @@ async def process_warn(callback: CallbackQuery, state: FSMContext):
 async def process_brand(callback: CallbackQuery, state: FSMContext):
     code = callback.data.split("_")[2]
     coeff = crud.get_coefficient_by_code("brand", code)
+    logger.info(f"User {callback.from_user.id} chose brand: {coeff['name_ua']} (x{coeff['multiplier']})")
+    
     await state.update_data(brand_code=code, brand_multiplier=coeff["multiplier"], brand_name=coeff["name_ua"])
     
     await callback.message.edit_text(
@@ -217,6 +230,8 @@ async def process_brand(callback: CallbackQuery, state: FSMContext):
 async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContext):
     code = callback.data.split("_")[2]
     coeff = crud.get_coefficient_by_code("urgent", code)
+    logger.info(f"User {callback.from_user.id} chose urgent: {coeff['name_ua']} (x{coeff['multiplier']})")
+    
     await state.update_data(urgent_code=code, urgent_multiplier=coeff["multiplier"], urgent_name=coeff["name_ua"])
     
     snapshot = await state.get_data()
@@ -236,6 +251,8 @@ async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContex
             phys_code=snapshot["phys_code"]
         )
         
+        logger.info(f"User {callback.from_user.id} valuation calculated: {final_price:.2f} {snapshot['currency']}")
+
         # Отримуємо курс НБУ, якщо валюта не UAH
         nbu_info = ""
         if snapshot["currency"] != "UAH":
@@ -281,6 +298,7 @@ async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContex
             parse_mode="HTML"
         )
     except Exception as e:
+        logger.error(f"Error calculating price: {e}")
         await callback.message.answer(f"❌ Виникла помилка при розрахунку: {e}")
         
     await state.clear()
@@ -295,6 +313,7 @@ async def process_receipt_image(callback: CallbackQuery):
         return
         
     await callback.answer("Генерую фото-сертифікат... ⏳")
+    logger.info(f"User {callback.from_user.id} generated image receipt for valuation #{val_id}")
     
     snapshot = json.loads(valuation["snapshot_json"])
     final_price = valuation["final_price"]

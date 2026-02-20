@@ -10,17 +10,17 @@ class TestValuationEngine(unittest.TestCase):
 
     def test_k_age_normal_decay(self):
         # Телефон (lifespan 60). В кінці строку життя має досягти ~ Floor + 5% (0.25)
-        k_age = ValuationEngine.calculate_k_age(60, 60)
+        k_age = ValuationEngine.calculate_k_age(60, 60, brand_multiplier=1.0)
         self.assertAlmostEqual(k_age, 0.25, places=2)
         
         # Половина строку (30 міс)
-        k_age_half = ValuationEngine.calculate_k_age(30, 60)
+        k_age_half = ValuationEngine.calculate_k_age(30, 60, brand_multiplier=1.0)
         self.assertTrue(0.25 < k_age_half < 1.0)
 
     def test_k_age_residual_floor(self):
         # Товару 10 років (120 міс), але lifespan 5 років (60 міс).
         # Обмеження для електроніки: 0.20 (20%)
-        k_age = ValuationEngine.calculate_k_age(120, 60)
+        k_age = ValuationEngine.calculate_k_age(120, 60, brand_multiplier=1.0)
         self.assertAlmostEqual(k_age, 0.20, places=2)
 
     def test_new_old_stock(self):

@@ -389,7 +389,10 @@ async def process_brand(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(ValuationFSM.choosing_urgent, F.data.startswith("factor_urgent_"))
 async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContext):
-    code = callback.data.split("_")[2]
+    # Код може містити підкреслення
+    prefix = "factor_urgent_"
+    code = callback.data[len(prefix):]
+    
     coeff = crud.get_coefficient_by_code("urgent", code)
     
     if not coeff:
@@ -403,11 +406,12 @@ async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContex
     snapshot = await state.get_data()
     
     try:
-        # Розраховуємо K_age окремо для відображення
+        # Розраховуємо K_age окремо для відображення, враховуючи бренд
         k_age = ValuationEngine.calculate_k_age(
-            snapshot["age_months"], 
-            snapshot["lifespan_months"], 
-            is_sealed=(snapshot.get("phys_code") == "sealed")
+            age_months=snapshot["age_months"], 
+            lifespan_months=snapshot["lifespan_months"], 
+            is_sealed=(snapshot.get("phys_code") == "sealed"),
+            brand_multiplier=snapshot.get("brand_multiplier", 1.0)
         )
         snapshot["age_multiplier"] = k_age
         

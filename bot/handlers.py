@@ -174,14 +174,42 @@ async def process_age_text(message: Message, state: FSMContext):
     is_years = bool(re.search(r"(рік|рок|лет|year|р)", text))
     is_months = bool(re.search(r"(міс|мес|month|м)", text))
     
+    # Якщо одиниці виміру не вказані, запитуємо користувача
     if not is_years and not is_months:
-        if num <= 15:
-            is_years = True
-        else:
-            is_months = True
+        await state.update_data(pending_age_num=num)
+        
+        builder = InlineKeyboardBuilder()
+        builder.button(text="Років", callback_data="age_unit_years")
+        builder.button(text="Місяців", callback_data="age_unit_months")
+        builder.adjust(2)
+        
+        await message.answer(
+            f"Ви ввели число <b>{num}</b>. Це роки чи місяці?", 
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+        return
 
     age_months = int(num * 12) if is_years else int(num)
     await _proceed_to_phys_state(message, state, age_months, message.from_user.id)
+
+@router.callback_query(ValuationFSM.entering_age, F.data.startswith("age_unit_"))
+async def process_age_unit_selection(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    num = data.get("pending_age_num")
+    
+    if not num:
+        await callback.answer("Помилка, введіть вік ще раз.", show_alert=True)
+        return
+        
+    if "years" in callback.data:
+        age_months = int(num * 12)
+    else:
+        age_months = int(num)
+        
+    await callback.message.delete()
+    await _proceed_to_phys_state(callback.message, state, age_months, callback.from_user.id)
+
 
 async def _proceed_to_phys_state(message: Message, state: FSMContext, age_months: int, user_id: int):
     logger.info(f"User {user_id} entered age: {age_months} months")
@@ -202,7 +230,11 @@ async def _proceed_to_phys_state(message: Message, state: FSMContext, age_months
 
 # --- Універсальний обробник для факторів ---
 async def process_factor(callback: CallbackQuery, state: FSMContext, factor_type: str, next_state: State, next_step_num: int, next_step_name: str, next_factor: str):
-    code = callback.data.split("_")[2]
+    # Код може містити підкреслення (напр. 'minor_issues'). 
+    # Тому беремо все після префіксу "factor_{factor_type}_"
+    prefix = f"factor_{factor_type}_"
+    code = callback.data[len(prefix):]
+    
     coeff = crud.get_coefficient_by_code(factor_type, code)
     
     if not coeff:
@@ -218,14 +250,103 @@ async def process_factor(callback: CallbackQuery, state: FSMContext, factor_type
         f"{factor_type}_name": coeff["name_ua"]
     })
     
+    # Додаємо кнопку "⬅️ Назад" до клавіатури наступного кроку
+    builder = InlineKeyboardBuilder()
+    if next_factor:
+        coeffs = crud.get_coefficients(next_factor)
+        for c in coeffs:
+            builder.button(text=c['name_ua'], callback_data=f"factor_{next_factor}_{c['code']}")
+    builder.button(text="⬅️ Назад", callback_data=f"back_to_{factor_type}")
+    builder.adjust(1)
+    
     await callback.message.edit_text(
         f"✅ Обрано: <b>{coeff['name_ua']}</b>\n\n"
         f"🔎 <b>Крок {next_step_num}/9: {next_step_name}</b>\n",
-        reply_markup=keyboards.get_factor_kb(next_factor) if next_factor else None,
+        reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
     await state.set_state(next_state)
 
+
+@router.callback_query(F.data.startswith("back_to_"))
+async def process_back_button(callback: CallbackQuery, state: FSMContext):
+    target = callback.data.split("_")[2]
+    
+    # Визначаємо, куди повертатися, та який текст/клавіатуру показати
+    if target == "phys":
+        await state.set_state(ValuationFSM.choosing_phys)
+        data = await state.get_data()
+        await callback.message.edit_text(
+            f"✅ Вік: <b>{data.get('age_months', 0)} міс.</b>\n\n"
+            "🔎 <b>Крок 5/9: Фізичний стан</b>\n"
+            "Оцініть зовнішній вигляд товару (подряпини, вм'ятини, стан корпусу).",
+            reply_markup=keyboards.get_factor_kb("phys"),
+            parse_mode="HTML"
+        )
+    elif target == "tech":
+        await state.set_state(ValuationFSM.choosing_tech)
+        data = await state.get_data()
+        builder = InlineKeyboardBuilder()
+        coeffs = crud.get_coefficients("tech")
+        for c in coeffs:
+            builder.button(text=c['name_ua'], callback_data=f"factor_tech_{c['code']}")
+        builder.button(text="⬅️ Назад", callback_data="back_to_phys")
+        builder.adjust(1)
+        
+        await callback.message.edit_text(
+            f"✅ Обрано: <b>{data.get('phys_name', '')}</b>\n\n"
+            f"🔎 <b>Крок 6/9: Технічний стан (справність)</b>\n",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+    elif target == "comp":
+        await state.set_state(ValuationFSM.choosing_comp)
+        data = await state.get_data()
+        builder = InlineKeyboardBuilder()
+        coeffs = crud.get_coefficients("comp")
+        for c in coeffs:
+            builder.button(text=c['name_ua'], callback_data=f"factor_comp_{c['code']}")
+        builder.button(text="⬅️ Назад", callback_data="back_to_tech")
+        builder.adjust(1)
+        
+        await callback.message.edit_text(
+            f"✅ Обрано: <b>{data.get('tech_name', '')}</b>\n\n"
+            f"🔎 <b>Крок 7/9: Комплектація (коробка, аксесуари)</b>\n",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+    elif target == "warn":
+        await state.set_state(ValuationFSM.choosing_warn)
+        data = await state.get_data()
+        builder = InlineKeyboardBuilder()
+        coeffs = crud.get_coefficients("warn")
+        for c in coeffs:
+            builder.button(text=c['name_ua'], callback_data=f"factor_warn_{c['code']}")
+        builder.button(text="⬅️ Назад", callback_data="back_to_comp")
+        builder.adjust(1)
+        
+        await callback.message.edit_text(
+            f"✅ Обрано: <b>{data.get('comp_name', '')}</b>\n\n"
+            f"🔎 <b>Крок 8/9: Гарантія</b>\n",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+    elif target == "brand":
+        await state.set_state(ValuationFSM.choosing_brand)
+        data = await state.get_data()
+        builder = InlineKeyboardBuilder()
+        coeffs = crud.get_coefficients("brand")
+        for c in coeffs:
+            builder.button(text=c['name_ua'], callback_data=f"factor_brand_{c['code']}")
+        builder.button(text="⬅️ Назад", callback_data="back_to_warn")
+        builder.adjust(1)
+        
+        await callback.message.edit_text(
+            f"✅ Обрано: <b>{data.get('warn_name', '')}</b>\n\n"
+            f"🔎 <b>Крок 9/9: Ліквідність бренду</b>\n",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
 
 @router.callback_query(ValuationFSM.choosing_phys, F.data.startswith("factor_phys_"))
 async def process_phys(callback: CallbackQuery, state: FSMContext):

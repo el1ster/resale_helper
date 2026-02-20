@@ -6,6 +6,7 @@ class ValuationFSM(StatesGroup):
     Кожен крок відповідає за збір одного з множників математичної моделі.
     """
     choosing_category = State()   # Вибір категорії товару (id -> lifespan_months)
+    entering_item_name = State()  # Введення користувацької назви (або пропуск)
     choosing_currency = State()   # Вибір валюти розрахунку (UAH, USD, EUR)
     entering_base_price = State() # Введення базової (початкової) ціни
     entering_age = State()        # Введення віку товару (місяці/роки)
@@ -17,4 +18,5 @@ class ValuationFSM(StatesGroup):
     choosing_warn = State()       # Гарантія (K_warn)
     choosing_brand = State()      # Ліквідність бренду (K_brand)
     choosing_urgent = State()     # Терміновість (K_urgent)
+
 

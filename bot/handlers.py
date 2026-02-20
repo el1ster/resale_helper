@@ -6,6 +6,7 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.states import ValuationFSM
 from bot import keyboards
@@ -20,7 +21,7 @@ router = Router()
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    logger.info(f"User {message.from_user.id} started the bot.")
+    logger.info(f"User {message.from_user.id} ({message.from_user.username}) started the bot.")
     await message.answer(
         "👋 Вітаю у <b>EVS Bot</b> — Універсальній системі оцінки активів!\n\n"
         "Я допоможу вам розрахувати справедливу ринкову вартість будь-якого товару (від смартфона до дивана).\n\n"
@@ -31,7 +32,7 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(Command("evaluate"))
 async def cmd_evaluate(message: Message, state: FSMContext):
     await state.clear()
-    logger.info(f"User {message.from_user.id} started an evaluation.")
+    logger.info(f"User {message.from_user.id} started a new evaluation.")
     await message.answer(
         "📦 <b>Крок 1/9: Виберіть категорію товару</b>\n"
         "Що саме ми будемо оцінювати?",
@@ -46,25 +47,56 @@ async def process_category(callback: CallbackQuery, state: FSMContext):
     category = crud.get_category_by_id(cat_id)
     
     if not category:
-        await callback.answer("Категорію не знайдено!", show_alert=True)
+        logger.warning(f"User {callback.from_user.id} clicked invalid category: {cat_id}")
+        await callback.answer("Категорію не знайдено! Спробуйте ще раз.", show_alert=True)
         return
 
     logger.info(f"User {callback.from_user.id} chose category: {category['name_ua']} (id: {cat_id})")
 
-    # Зберігаємо вибрані дані у пам'ять FSM
     await state.update_data(
         category_id=cat_id,
         category_name=category["name_ua"],
         lifespan_months=category["lifespan_months"]
     )
     
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➡️ Пропустити", callback_data="skip_name")
+    
     await callback.message.edit_text(
         f"✅ Обрано: <b>{category['name_ua']}</b>\n\n"
-        "💱 <b>Крок 2/9: Оберіть валюту</b>\n"
-        "В якій валюті ви будете вказувати вартість?",
-        reply_markup=keyboards.get_currency_kb(),
+        "📝 <b>Крок 1.5/9: Введіть назву товару (Опціонально)</b>\n"
+        "Введіть точну назву (наприклад, <i>iPhone 13 Pro</i> або <i>Диван IKEA</i>), щоб вона відображалась у звіті.\n"
+        "Або натисніть «Пропустити».",
+        reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
+    await state.set_state(ValuationFSM.entering_item_name)
+
+@router.message(ValuationFSM.entering_item_name)
+async def process_item_name_text(message: Message, state: FSMContext):
+    item_name = message.text.strip()
+    await state.update_data(item_name=item_name)
+    logger.info(f"User {message.from_user.id} entered custom item name: {item_name}")
+    await proceed_to_currency(message, state, is_callback=False)
+
+@router.callback_query(ValuationFSM.entering_item_name, F.data == "skip_name")
+async def process_item_name_skip(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await state.update_data(item_name=data['category_name'])
+    logger.info(f"User {callback.from_user.id} skipped custom item name.")
+    await proceed_to_currency(callback.message, state, is_callback=True)
+
+async def proceed_to_currency(message: Message, state: FSMContext, is_callback=False):
+    data = await state.get_data()
+    text = (
+        f"✅ Товар: <b>{data['item_name']}</b>\n\n"
+        "💱 <b>Крок 2/9: Оберіть валюту</b>\n"
+        "В якій валюті ви будете вказувати початкову вартість?"
+    )
+    if is_callback:
+        await message.edit_text(text, reply_markup=keyboards.get_currency_kb(), parse_mode="HTML")
+    else:
+        await message.answer(text, reply_markup=keyboards.get_currency_kb(), parse_mode="HTML")
     await state.set_state(ValuationFSM.choosing_currency)
 
 @router.callback_query(ValuationFSM.choosing_currency, F.data.startswith("curr_"))
@@ -84,17 +116,18 @@ async def process_currency(callback: CallbackQuery, state: FSMContext):
 
 @router.message(ValuationFSM.entering_base_price)
 async def process_base_price(message: Message, state: FSMContext):
-    # Очищуємо текст від можливих пробілів чи символів валют, намагаємось знайти число
     text = message.text.replace(" ", "").replace(",", ".")
     match = re.search(r"(\d+(\.\d+)?)", text)
     
     if not match:
+        logger.warning(f"User {message.from_user.id} entered invalid price: {message.text}")
         await message.answer("⚠️ Будь ласка, введіть коректне число (наприклад: 15000).")
         return
         
     base_price = float(match.group(1))
     
     if base_price <= 0:
+        logger.warning(f"User {message.from_user.id} entered zero/negative price: {base_price}")
         await message.answer("⚠️ Вартість повинна бути більшою за нуль.")
         return
 
@@ -132,6 +165,7 @@ async def process_age_text(message: Message, state: FSMContext):
     
     match_num = re.search(r"(\d+(\.\d+)?)", text)
     if not match_num:
+        logger.warning(f"User {message.from_user.id} entered invalid age text: {message.text}")
         await message.answer("⚠️ Не вдалося розпізнати число. Спробуйте ще раз, наприклад: <i>1.5 роки</i> або <i>18 міс</i>.", parse_mode="HTML")
         return
         
@@ -147,7 +181,6 @@ async def process_age_text(message: Message, state: FSMContext):
             is_months = True
 
     age_months = int(num * 12) if is_years else int(num)
-    
     await _proceed_to_phys_state(message, state, age_months, message.from_user.id)
 
 async def _proceed_to_phys_state(message: Message, state: FSMContext, age_months: int, user_id: int):
@@ -173,7 +206,8 @@ async def process_factor(callback: CallbackQuery, state: FSMContext, factor_type
     coeff = crud.get_coefficient_by_code(factor_type, code)
     
     if not coeff:
-        await callback.answer("Помилка: Коефіцієнт не знайдено!", show_alert=True)
+        logger.error(f"User {callback.from_user.id} clicked missing coefficient: {factor_type}_{code}")
+        await callback.answer(f"Помилка: Критерій '{code}' не знайдено! Зверніться до підтримки.", show_alert=True)
         return
 
     logger.info(f"User {callback.from_user.id} chose {factor_type}: {coeff['name_ua']} (x{coeff['multiplier']})")
@@ -213,6 +247,12 @@ async def process_warn(callback: CallbackQuery, state: FSMContext):
 async def process_brand(callback: CallbackQuery, state: FSMContext):
     code = callback.data.split("_")[2]
     coeff = crud.get_coefficient_by_code("brand", code)
+    
+    if not coeff:
+        logger.error(f"User {callback.from_user.id} clicked missing brand: {code}")
+        await callback.answer(f"Помилка: Бренд '{code}' не знайдено!", show_alert=True)
+        return
+        
     logger.info(f"User {callback.from_user.id} chose brand: {coeff['name_ua']} (x{coeff['multiplier']})")
     
     await state.update_data(brand_code=code, brand_multiplier=coeff["multiplier"], brand_name=coeff["name_ua"])
@@ -230,14 +270,27 @@ async def process_brand(callback: CallbackQuery, state: FSMContext):
 async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContext):
     code = callback.data.split("_")[2]
     coeff = crud.get_coefficient_by_code("urgent", code)
-    logger.info(f"User {callback.from_user.id} chose urgent: {coeff['name_ua']} (x{coeff['multiplier']})")
     
+    if not coeff:
+        logger.error(f"User {callback.from_user.id} clicked missing urgent code: {code}")
+        await callback.answer(f"Помилка: Критерій '{code}' не знайдено!", show_alert=True)
+        return
+        
+    logger.info(f"User {callback.from_user.id} chose urgent: {coeff['name_ua']} (x{coeff['multiplier']})")
     await state.update_data(urgent_code=code, urgent_multiplier=coeff["multiplier"], urgent_name=coeff["name_ua"])
     
     snapshot = await state.get_data()
     
     try:
-        # 1. Математичний розрахунок
+        # Розраховуємо K_age окремо для відображення
+        k_age = ValuationEngine.calculate_k_age(
+            snapshot["age_months"], 
+            snapshot["lifespan_months"], 
+            is_sealed=(snapshot.get("phys_code") == "sealed")
+        )
+        snapshot["age_multiplier"] = k_age
+        
+        # 1. Фінальний розрахунок
         final_price = ValuationEngine.calculate_price(
             base_price=snapshot["base_price"],
             age_months=snapshot["age_months"],
@@ -251,22 +304,21 @@ async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContex
             phys_code=snapshot["phys_code"]
         )
         
-        logger.info(f"User {callback.from_user.id} valuation calculated: {final_price:.2f} {snapshot['currency']}")
+        logger.info(f"User {callback.from_user.id} valuation calculated: {final_price:.2f} {snapshot['currency']} (k_age={k_age:.2f})")
 
-        # Отримуємо курс НБУ, якщо валюта не UAH
         nbu_info = ""
         if snapshot["currency"] != "UAH":
             rate = await currency.get_nbu_rate(snapshot["currency"])
             final_price_uah = final_price * rate
             nbu_info = f"\n🔄 <i>(~ {final_price_uah:,.2f} UAH за курсом НБУ)</i>"
 
-        # 2. Збереження в базу даних (Історія)
+        # 2. Збереження
         user_id = crud.get_or_create_user(
             telegram_id=callback.from_user.id,
             username=callback.from_user.username or "unknown"
         )
         
-        val_id = crud.save_valuation(
+        val_id, user_report_num = crud.save_valuation(
             user_id=user_id,
             category_id=snapshot["category_id"],
             base_price=snapshot["base_price"],
@@ -275,12 +327,12 @@ async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContex
             snapshot=snapshot
         )
 
-        # 3. Формування Markdown-чеку
+        # 3. Маркдаун чек
         report = (
-            f"📊 <b>Звіт про оцінку #{val_id}</b>\n\n"
-            f"📦 <b>Категорія:</b> {snapshot['category_name']}\n"
-            f"💵 <b>Базова ціна:</b> {snapshot['base_price']:,.2f} {snapshot['currency']}\n"
-            f"⏳ <b>Вік:</b> {snapshot['age_months']} міс.\n\n"
+            f"📊 <b>Звіт про оцінку #{user_report_num}</b> <i>(Системний ID: {val_id})</i>\n\n"
+            f"📦 <b>Товар:</b> {snapshot.get('item_name', snapshot['category_name'])}\n"
+            f"💵 <b>Новий коштує:</b> {snapshot['base_price']:,.2f} {snapshot['currency']}\n"
+            f"⏳ <b>Вік:</b> {snapshot['age_months']} міс. (x{k_age:.2f})\n\n"
             f"<b>Критерії зносу:</b>\n"
             f"• Стан: {snapshot['phys_name']} (x{snapshot['phys_multiplier']})\n"
             f"• Технічно: {snapshot['tech_name']} (x{snapshot['tech_multiplier']})\n"
@@ -298,7 +350,7 @@ async def process_urgent_and_calculate(callback: CallbackQuery, state: FSMContex
             parse_mode="HTML"
         )
     except Exception as e:
-        logger.error(f"Error calculating price: {e}")
+        logger.error(f"Error calculating price: {e}", exc_info=True)
         await callback.message.answer(f"❌ Виникла помилка при розрахунку: {e}")
         
     await state.clear()
@@ -309,6 +361,7 @@ async def process_receipt_image(callback: CallbackQuery):
     valuation = crud.get_valuation(val_id)
     
     if not valuation:
+        logger.warning(f"User {callback.from_user.id} requested missing receipt #{val_id}")
         await callback.answer("Оцінку не знайдено в базі.", show_alert=True)
         return
         
@@ -318,12 +371,17 @@ async def process_receipt_image(callback: CallbackQuery):
     snapshot = json.loads(valuation["snapshot_json"])
     final_price = valuation["final_price"]
     
-    # Генерація картинки через Pillow
     img_io = receipt.generate_receipt_image(snapshot, final_price)
     
     photo = BufferedInputFile(img_io.read(), filename=f"evs_receipt_{val_id}.png")
     
+    user_report_num = snapshot.get("user_report_num", val_id)
     await callback.message.answer_photo(
         photo=photo,
-        caption=f"📸 Ваш сертифікат оцінки #{val_id}."
+        caption=f"📸 Ваш сертифікат оцінки #{user_report_num}."
     )
+
+@router.callback_query()
+async def process_unknown_callback(callback: CallbackQuery):
+    logger.warning(f"User {callback.from_user.id} triggered unknown or expired callback: {callback.data}")
+    await callback.answer("Ця кнопка більше не активна або сталася помилка. Спробуйте /evaluate знову.", show_alert=True)

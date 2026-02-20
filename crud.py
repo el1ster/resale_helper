@@ -58,11 +58,19 @@ def get_or_create_user(telegram_id: int, username: str) -> int:
     conn.close()
     return user_id
 
-def save_valuation(user_id: int, category_id: int, base_price: float, currency_code: str, final_price: float, snapshot: dict) -> int:
-    """Зберігає розрахунок у базу даних та повертає id запису."""
+def save_valuation(user_id: int, category_id: int, base_price: float, currency_code: str, final_price: float, snapshot: dict) -> tuple[int, int]:
+    """Зберігає розрахунок у базу даних та повертає id запису та порядковий номер звіту для цього користувача."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # Визначаємо порядковий номер звіту для користувача
+    cursor.execute("SELECT COUNT(*) FROM valuations WHERE user_id = ?", (user_id,))
+    user_report_num = cursor.fetchone()[0] + 1
+    
+    # Зберігаємо номер у snapshot для генерації квитанцій
+    snapshot['user_report_num'] = user_report_num
     snapshot_json = json.dumps(snapshot, ensure_ascii=False)
+    
     cursor.execute("""
         INSERT INTO valuations (user_id, category_id, base_price, currency_code, final_price, snapshot_json)
         VALUES (?, ?, ?, ?, ?, ?)
@@ -70,7 +78,7 @@ def save_valuation(user_id: int, category_id: int, base_price: float, currency_c
     val_id = cursor.lastrowid
     conn.commit()
     conn.close()
-    return val_id
+    return val_id, user_report_num
 
 def get_valuation(val_id: int) -> Optional[Dict[str, Any]]:
     """Повертає запис про оцінку за ID."""

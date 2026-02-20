@@ -1,6 +1,12 @@
 from PIL import Image, ImageDraw, ImageFont
 import io
 import os
+import re
+import textwrap
+
+def clean_factor_name(name: str) -> str:
+    """Видаляє текст у дужках (включаючи самі дужки) для чистого відображення у чеку."""
+    return re.sub(r'\s*\(.*?\)', '', str(name)).strip()
 
 def generate_receipt_image(snapshot: dict, final_price: float) -> io.BytesIO:
     """Генерує PNG-зображення з красивим чеком/сертифікатом оцінки."""
@@ -14,7 +20,7 @@ def generate_receipt_image(snapshot: dict, final_price: float) -> io.BytesIO:
         font_path_bold = os.path.join("assets", "Roboto-Bold.ttf")
         
         # Намагаємось використати завантажені шрифти Roboto
-        font_title = ImageFont.truetype(font_path_bold, 46)
+        font_title = ImageFont.truetype(font_path_bold, 42)
         font_subtitle = ImageFont.truetype(font_path_reg, 32)
         font_text = ImageFont.truetype(font_path_reg, 26)
         font_bold = ImageFont.truetype(font_path_bold, 28)
@@ -28,7 +34,9 @@ def generate_receipt_image(snapshot: dict, final_price: float) -> io.BytesIO:
         font_price = ImageFont.load_default()
 
     # Заголовок
-    draw.text((50, 50), "EVS Bot: Сертифікат Оцінки", fill=(255, 255, 255), font=font_title)
+    report_num = snapshot.get('user_report_num', '')
+    title_text = f"EVS Bot: Сертифікат Оцінки #{report_num}" if report_num else "EVS Bot: Сертифікат Оцінки"
+    draw.text((50, 50), title_text, fill=(255, 255, 255), font=font_title)
     draw.line((50, 110, 700, 110), fill=(100, 100, 100), width=2)
 
     # Базова інформація
@@ -36,26 +44,30 @@ def generate_receipt_image(snapshot: dict, final_price: float) -> io.BytesIO:
     base_price = snapshot.get('base_price', 0)
     
     y = 140
-    # Обрізаємо задовгі назви категорій
-    cat_name = snapshot.get('category_name', 'Невідомо')
-    if len(cat_name) > 35:
-        cat_name = cat_name[:32] + "..."
-        
-    draw.text((50, y), "Товар:", fill=(150, 150, 150), font=font_text)
-    draw.text((250, y), f"{cat_name}", fill=(255, 255, 255), font=font_bold)
+    # Отримуємо назву товару і робимо перенесення рядків (wrap)
+    item_name = snapshot.get('item_name', snapshot.get('category_name', 'Невідомо'))
+    wrapped_name = textwrap.wrap(item_name, width=32)
     
-    y += 50
+    draw.text((50, y), "Товар:", fill=(150, 150, 150), font=font_text)
+    for line in wrapped_name:
+        draw.text((250, y), line, fill=(255, 255, 255), font=font_bold)
+        y += 40
+        
+    y += 10
     draw.text((50, y), "Новий коштує:", fill=(150, 150, 150), font=font_text)
     draw.text((250, y), f"{base_price:,.2f} {currency}", fill=(255, 255, 255), font=font_bold)
     
     y += 50
     draw.text((50, y), "Вік:", fill=(150, 150, 150), font=font_text)
+    k_age = snapshot.get('age_multiplier', 1.0)
     draw.text((250, y), f"{snapshot.get('age_months', 0)} міс.", fill=(255, 255, 255), font=font_bold)
+    draw.text((620, y), f"x{k_age:.2f}", fill=(200, 200, 200), font=font_bold) # Множник віку
 
-    draw.line((50, y+50, 700, y+50), fill=(100, 100, 100), width=1)
+    y += 50
+    draw.line((50, y, 700, y), fill=(100, 100, 100), width=1)
     
     # Фактори
-    y += 80
+    y += 30
     draw.text((50, y), "Деталі оцінки (фактори зносу):", fill=(200, 200, 200), font=font_subtitle)
     
     y += 60
@@ -79,17 +91,18 @@ def generate_receipt_image(snapshot: dict, final_price: float) -> io.BytesIO:
             # Назва фактору
             draw.text((50, y), f"{label}:", fill=(150, 150, 150), font=font_text)
             
-            # Значення (обрізаємо до 20 символів щоб не налізало на множник)
-            val_text = str(name)
-            if len(val_text) > 23:
-                val_text = val_text[:20] + "..."
-            draw.text((270, y), val_text, fill=(255, 255, 255), font=font_text)
+            # Чиста назва без дужок
+            clean_name = clean_factor_name(name)
+            if len(clean_name) > 23:
+                clean_name = clean_name[:20] + "..."
+            draw.text((270, y), clean_name, fill=(255, 255, 255), font=font_text)
             
             # Множник вирівнюємо жорстко по правій стороні
             mult_str, color = format_multiplier(mult)
             draw.text((620, y), mult_str, fill=color, font=font_bold)
             y += line_height
 
+    y -= 15
     draw.line((50, y+30, 700, y+30), fill=(100, 100, 100), width=2)
     
     # Фінальна ціна

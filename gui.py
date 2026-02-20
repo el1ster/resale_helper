@@ -5,9 +5,10 @@ from dotenv import set_key, load_dotenv
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QPushButton, QMessageBox
+    QLabel, QLineEdit, QPushButton, QMessageBox, QPlainTextEdit
 )
 from PySide6.QtCore import QProcess, Qt
+import subprocess
 
 # Завантажуємо існуючий .env, якщо є
 ENV_PATH = Path(".env")
@@ -17,10 +18,12 @@ class BotControlPanel(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EVS Bot Control Panel")
-        self.setFixedSize(400, 250)
+        self.setMinimumSize(600, 450) # Адаптивний розмір замість фіксованого
 
         # Процес для запуску бота
         self.bot_process = QProcess(self)
+        self.bot_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels) # Об'єднуємо stdout та stderr
+        self.bot_process.readyReadStandardOutput.connect(self.handle_stdout)
         self.bot_process.started.connect(self.on_bot_started)
         self.bot_process.finished.connect(self.on_bot_finished)
         self.bot_process.errorOccurred.connect(self.on_bot_error)
@@ -46,32 +49,32 @@ class BotControlPanel(QMainWindow):
             
         token_layout.addWidget(token_label)
         token_layout.addWidget(self.token_input)
-        layout.addLayout(token_layout)
-
-        # Кнопка збереження токена
+        
         self.save_token_btn = QPushButton("Зберегти токен")
         self.save_token_btn.clicked.connect(self.save_token)
-        layout.addWidget(self.save_token_btn)
+        token_layout.addWidget(self.save_token_btn)
+        
+        layout.addLayout(token_layout)
 
         # 2. Індикатор статусу
         status_layout = QHBoxLayout()
         status_label = QLabel("Статус сервера:")
         self.status_indicator = QLabel("🔴 Зупинено")
         self.status_indicator.setStyleSheet("color: red; font-weight: bold;")
-        self.status_indicator.setAlignment(Qt.AlignmentFlag.AlignRight)
         
         status_layout.addWidget(status_label)
         status_layout.addWidget(self.status_indicator)
+        status_layout.addStretch() # Відсуваємо індикатор ліворуч
         layout.addLayout(status_layout)
 
         # 3. Кнопки управління (Запуск/Зупинка)
         controls_layout = QHBoxLayout()
         self.start_btn = QPushButton("▶ Запустити бота")
-        self.start_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.start_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;")
         self.start_btn.clicked.connect(self.start_bot)
         
         self.stop_btn = QPushButton("⏹ Зупинити бота")
-        self.stop_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
+        self.stop_btn.setStyleSheet("background-color: #f44336; color: white; font-weight: bold; padding: 8px;")
         self.stop_btn.clicked.connect(self.stop_bot)
         self.stop_btn.setEnabled(False) # Відключена при старті
 
@@ -79,10 +82,24 @@ class BotControlPanel(QMainWindow):
         controls_layout.addWidget(self.stop_btn)
         layout.addLayout(controls_layout)
         
-        # 4. Лог виводу (Опціонально, для відображення помилок з stderr)
-        self.log_label = QLabel("")
-        self.log_label.setStyleSheet("color: gray; font-size: 10px;")
-        layout.addWidget(self.log_label)
+        # 4. Лог виводу з можливістю копіювання
+        log_label_layout = QHBoxLayout()
+        log_label = QLabel("Логи сервера:")
+        
+        self.copy_log_btn = QPushButton("📋 Скопіювати логи")
+        self.copy_log_btn.clicked.connect(self.copy_logs)
+        
+        log_label_layout.addWidget(log_label)
+        log_label_layout.addStretch()
+        log_label_layout.addWidget(self.copy_log_btn)
+        
+        layout.addLayout(log_label_layout)
+        
+        self.log_area = QPlainTextEdit()
+        self.log_area.setReadOnly(True)
+        # Стилізація під консоль: темний фон, моноширинний шрифт
+        self.log_area.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: Consolas, monospace; font-size: 12px;")
+        layout.addWidget(self.log_area)
 
     def save_token(self):
         token = self.token_input.text().strip()
@@ -106,16 +123,49 @@ class BotControlPanel(QMainWindow):
             QMessageBox.warning(self, "Увага", "Спочатку збережіть токен Telegram-бота!")
             return
 
-        self.log_label.setText("Запуск...")
-        # Використовуємо системний python (або з віртуального оточення, якщо він запущений через нього)
-        self.bot_process.start("python", ["main.py"])
+        self.log_area.clear()
+        self.append_log("Система: Запуск бота...")
+        
+        # Використовуємо системний python
+        self.bot_process.start("python", ["-u", "main.py"]) # -u для небуферизованого виводу
 
     def stop_bot(self):
         if self.bot_process.state() == QProcess.ProcessState.Running:
-            self.bot_process.terminate()
-            self.bot_process.waitForFinished(3000)
-            if self.bot_process.state() == QProcess.ProcessState.Running:
-                self.bot_process.kill()
+            self.append_log("Система: Надсилання сигналу м'якої зупинки (taskkill)...")
+            
+            # В Windows QProcess.terminate() часто працює як kill(). 
+            # Використовуємо taskkill для відправки SIGTERM на дерево процесів.
+            pid = self.bot_process.processId()
+            if sys.platform == 'win32':
+                # Намагаємось закрити м'яко без /F (force)
+                subprocess.call(['taskkill', '/PID', str(pid), '/T'])
+            else:
+                self.bot_process.terminate()
+
+            # Чекаємо 3 секунди
+            if not self.bot_process.waitForFinished(3000):
+                self.append_log("Система: Процес не відповідає. Примусове завершення...")
+                if sys.platform == 'win32':
+                    subprocess.call(['taskkill', '/F', '/PID', str(pid), '/T'])
+                else:
+                    self.bot_process.kill()
+
+    def handle_stdout(self):
+        data = self.bot_process.readAllStandardOutput()
+        stdout = bytes(data).decode('utf-8', errors='replace')
+        self.append_log(stdout.strip())
+
+    def append_log(self, text):
+        if text:
+            self.log_area.appendPlainText(text)
+            # Автоматичний скрол донизу
+            scrollbar = self.log_area.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+
+    def copy_logs(self):
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.log_area.toPlainText())
+        QMessageBox.information(self, "Успіх", "Логи скопійовано в буфер обміну!")
 
     def on_bot_started(self):
         self.status_indicator.setText("🟢 Працює")
@@ -124,7 +174,7 @@ class BotControlPanel(QMainWindow):
         self.stop_btn.setEnabled(True)
         self.token_input.setEnabled(False)
         self.save_token_btn.setEnabled(False)
-        self.log_label.setText("Бот успішно запущений.")
+        self.append_log("Система: Процес бота успішно стартував.")
 
     def on_bot_finished(self, exit_code, exit_status):
         self.status_indicator.setText("🔴 Зупинено")
@@ -134,15 +184,14 @@ class BotControlPanel(QMainWindow):
         self.token_input.setEnabled(True)
         self.save_token_btn.setEnabled(True)
         
-        # Читаємо помилки, якщо бот впав
-        stderr = self.bot_process.readAllStandardError().data().decode('utf-8')
-        if stderr:
-            self.log_label.setText(f"Помилка: {stderr[:100]}...")
+        # Визначаємо, чи це був очікуваний вихід через taskkill, чи реальний краш
+        if exit_status == QProcess.ExitStatus.CrashExit and exit_code != 1:
+            self.append_log("Система: Бот завершив роботу (Зупинено користувачем або Crash).")
         else:
-            self.log_label.setText("Бот зупинений.")
+            self.append_log(f"Система: Бот зупинений. Код виходу: {exit_code}")
 
     def on_bot_error(self, error):
-        self.log_label.setText(f"Помилка процесу: {error.name}")
+        self.append_log(f"Система: Помилка процесу ({error.name})")
 
     def closeEvent(self, event):
         """Зупиняємо бота при закритті вікна."""
